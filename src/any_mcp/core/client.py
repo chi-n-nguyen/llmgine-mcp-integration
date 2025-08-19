@@ -185,3 +185,4 @@ class MCPClient:
     def __repr__(self):
         status = "connected" if self._connected else "disconnected"
         return f"MCPClient(server_name='{self.server_name}', status='{status}')"
+

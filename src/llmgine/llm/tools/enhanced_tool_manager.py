@@ -299,3 +299,4 @@ def get_default_mcp_servers() -> List[MCPServerConfig]:
             env={}
         )
     ]
+

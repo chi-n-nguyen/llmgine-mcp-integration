@@ -1,11 +1,13 @@
 """
 Simplified tool management for litellm.
 Handles tool registration, schema generation, and execution.
+Now supports both local tools and MCP tools.
 """
 
 import asyncio
 import inspect
 import json
+import logging
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
 from llmgine.llm import AsyncOrSyncToolFunction
@@ -14,15 +16,18 @@ from llmgine.llm.tools.toolCall import ToolCall
 if TYPE_CHECKING:
     from llmgine.llm.context.memory import SimpleChatHistory
 
+logger = logging.getLogger(__name__)
+
 
 class ToolManager:
-    """Simplified tool manager for litellm."""
+    """Simplified tool manager for litellm. Now supports both local and MCP tools."""
     
     def __init__(self, chat_history: Optional["SimpleChatHistory"] = None):
         """Initialize tool manager."""
         self.chat_history = chat_history
         self.tools: Dict[str, Callable] = {}
         self.tool_schemas: List[Dict[str, Any]] = []
+        self.mcp_clients: Dict[str, Any] = {}  # Store MCP clients by name
     
     def register_tool(self, func: AsyncOrSyncToolFunction) -> None:
         """Register a function as a tool."""
@@ -175,6 +180,69 @@ class ToolManager:
             return self.chat_history.get_messages()
         return []
     
+    async def register_mcp_server(self, server_name: str, command: str, args: List[str], 
+                                 env: Optional[Dict[str, str]] = None) -> bool:
+        """Register an MCP server and all its tools.
+        
+        Args:
+            server_name: Name for the MCP server
+            command: Command to run the server
+            args: Arguments for the server
+            env: Environment variables
+            
+        Returns:
+            True if server started and tools registered successfully
+        """
+        try:
+            # Import here to avoid circular imports
+            from llmgine.llm.tools.mcp_client import SimpleMCPClient
+            from llmgine.llm.tools.mcp_adapter import MCPToolAdapter
+            
+            # Create and start MCP client
+            client = SimpleMCPClient(server_name)
+            success = await client.start(command, args, env)
+            
+            if not success:
+                logger.error(f"Failed to start MCP server: {server_name}")
+                return False
+            
+            # Store client
+            self.mcp_clients[server_name] = client
+            
+            # Create adapter
+            adapter = MCPToolAdapter(client)
+            
+            # Register all tools from the MCP server
+            tools = client.get_tools()
+            for mcp_tool in tools:
+                # Convert to OpenAI schema
+                schema = adapter.convert_mcp_tool_to_schema(mcp_tool)
+                self.tool_schemas.append(schema)
+                
+                # Create wrapper function
+                wrapper_func = adapter.create_mcp_tool_function(mcp_tool.name)
+                self.tools[mcp_tool.name] = wrapper_func
+                
+                logger.info(f"Registered MCP tool: {mcp_tool.name}")
+            
+            logger.info(f"Successfully registered MCP server {server_name} with {len(tools)} tools")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error registering MCP server {server_name}: {e}")
+            return False
+    
+    async def cleanup_mcp_servers(self):
+        """Cleanup all MCP servers."""
+        for server_name, client in self.mcp_clients.items():
+            try:
+                await client.stop()
+                logger.info(f"Stopped MCP server: {server_name}")
+            except Exception as e:
+                logger.error(f"Error stopping MCP server {server_name}: {e}")
+        
+        self.mcp_clients.clear()
+
     # Backwards compatibility - these can be removed if not needed
     async def register_tool_async(self, func: AsyncOrSyncToolFunction) -> None:
         """Register tool async - for backwards compatibility."""

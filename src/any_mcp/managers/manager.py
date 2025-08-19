@@ -266,3 +266,4 @@ class MCPManager:
         active_count = len(self.active_clients)
         server_names = list(self.active_clients.keys())
         return f"MCPManager(active_servers={active_count}, servers={server_names})"
+
